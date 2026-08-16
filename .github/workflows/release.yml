@@ -1,0 +1,90 @@
+name: Tagged release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test on Windows
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -v
+
+  build:
+    name: Build Windows package
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Build portable application
+        shell: pwsh
+        run: >-
+          pyinstaller
+          --noconfirm
+          --clean
+          --onedir
+          --windowed
+          --name SetupSwitcher
+          --add-data "switcher/assets;switcher/assets"
+          --collect-all pycaw
+          --hidden-import win32timezone
+          run_switcher.py
+
+      - name: Create release archive
+        shell: pwsh
+        run: |
+          $package = "SetupSwitcher-$env:GITHUB_REF_NAME-windows-x64"
+          New-Item -ItemType Directory -Path $package | Out-Null
+          Copy-Item dist/SetupSwitcher/* -Destination $package -Recurse
+          Copy-Item README.md, THIRD_PARTY_NOTICES.md -Destination $package
+          Compress-Archive -Path "$package/*" -DestinationPath "$package.zip"
+          "PACKAGE_NAME=$package" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: ${{ env.PACKAGE_NAME }}.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$env:GITHUB_REF_NAME"
+          "$env:PACKAGE_NAME.zip"
+          --verify-tag
+          --generate-notes
+          --title "$env:GITHUB_REF_NAME"
