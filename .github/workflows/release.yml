@@ -82,9 +82,15 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$env:GITHUB_REF_NAME"
-          "$env:PACKAGE_NAME.zip"
-          --verify-tag
-          --generate-notes
-          --title "$env:GITHUB_REF_NAME"
+        run: |
+          $releaseArgs = @(
+            $env:GITHUB_REF_NAME,
+            "$env:PACKAGE_NAME.zip",
+            "--verify-tag",
+            "--generate-notes",
+            "--title", $env:GITHUB_REF_NAME
+          )
+          if ($env:GITHUB_REF_NAME -match "-") {
+            $releaseArgs += "--prerelease"
+          }
+          gh release create @releaseArgs
