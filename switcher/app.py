@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import signal
 import sys
+import json
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -20,6 +21,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -68,24 +70,11 @@ from .devices import (
 )
 from .startup import set_autostart
 from .hotkeys import HotkeyManager
+from .version import current_version, is_newer_version
 
 
-def make_icon(glyph: str = "S") -> QIcon:
-    pixmap = QPixmap(64, 64)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setBrush(QColor("#3b82f6"))
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawRoundedRect(3, 3, 58, 58, 15, 15)
-    painter.setPen(QColor("white"))
-    font = painter.font()
-    font.setPixelSize(32)
-    font.setBold(True)
-    painter.setFont(font)
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, glyph)
-    painter.end()
-    return QIcon(pixmap)
+def app_icon() -> QIcon:
+    return QIcon(str(Path(__file__).resolve().parent / "assets" / "switcher.ico"))
 
 
 def make_mode_icon(mode: str) -> QIcon:
@@ -438,7 +427,21 @@ class ColorButton(QPushButton):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, config: Config, parent=None) -> None:
+    @staticmethod
+    def _release_banner_text(
+        *, update_available: bool = False, latest_version: str = ""
+    ) -> str:
+        if update_available:
+            lead = f"<b>Switcher {latest_version or 'update'} is available</b>"
+            action = "Download the update from GitHub"
+            return (
+                f'{lead} · <a style="color:#ffbd73; text-decoration:none" '
+                'href="https://github.com/skvoch/setup-switcher/releases/latest">'
+                f"{action}</a>"
+            )
+        return f"<b>Switcher {current_version()}</b> · Checking for updates…"
+
+    def __init__(self, config: Config, parent=None, *, check_updates: bool = True) -> None:
         super().__init__(parent)
         self.setWindowTitle("Switcher settings")
         self.setMinimumWidth(520)
@@ -449,6 +452,22 @@ class SettingsDialog(QDialog):
         )
         explanation.setWordWrap(True)
         root.addWidget(explanation)
+        self.release_banner = QLabel(self._release_banner_text())
+        self.release_banner.setObjectName("releaseBanner")
+        self.release_banner.setOpenExternalLinks(True)
+        self.release_banner.hide()
+        root.addWidget(self.release_banner)
+        self._latest_version = ""
+        self._update_available = False
+        self._update_manager = QNetworkAccessManager(self)
+        self._update_manager.finished.connect(self._update_check_finished)
+        if check_updates:
+            request = QNetworkRequest(
+                QUrl("https://api.github.com/repos/skvoch/setup-switcher/releases?per_page=1")
+            )
+            request.setRawHeader(b"Accept", b"application/vnd.github+json")
+            request.setRawHeader(b"User-Agent", b"SetupSwitcher")
+            self._update_manager.get(request)
         errors: list[str] = []
         try:
             monitors = list_monitors()
@@ -482,6 +501,23 @@ class SettingsDialog(QDialog):
         hint.setWordWrap(True)
         hotkeys_form.addRow(hint)
         tabs.addTab(hotkeys_page, "Hotkeys")
+        if not getattr(sys, "frozen", False):
+            debug_page = QWidget()
+            debug_layout = QVBoxLayout(debug_page)
+            debug_hint = QLabel(
+                "Development-only controls. This tab is not included in portable builds."
+            )
+            debug_hint.setWordWrap(True)
+            debug_layout.addWidget(debug_hint)
+            self.debug_update_available = QCheckBox(
+                "Simulate a newly released update"
+            )
+            self.debug_update_available.toggled.connect(
+                self._simulate_update
+            )
+            debug_layout.addWidget(self.debug_update_available)
+            debug_layout.addStretch(1)
+            tabs.addTab(debug_page, "Debug")
         root.addWidget(tabs)
         self.autostart = QCheckBox("Start with Windows")
         self.autostart.setChecked(config.autostart)
@@ -491,17 +527,64 @@ class SettingsDialog(QDialog):
         )
         restart = buttons.addButton("Restart app", QDialogButtonBox.ButtonRole.ActionRole)
         restart.clicked.connect(lambda: self.done(2))
-        github = buttons.addButton("", QDialogButtonBox.ButtonRole.HelpRole)
+        footer = QHBoxLayout()
+        github = QPushButton()
+        github.setObjectName("githubButton")
         github.setIcon(QIcon(str(Path(__file__).resolve().parent / "assets" / "github.svg")))
         github.setIconSize(QSize(18, 18))
-        github.setFixedSize(30, 30)
-        github.setToolTip("github.com/skvoch")
+        github.setFixedSize(32, 32)
+        github.setToolTip("github.com/skvoch/setup-switcher")
         github.clicked.connect(
-            lambda: QDesktopServices.openUrl(QUrl("https://github.com/skvoch"))
+            lambda: QDesktopServices.openUrl(
+                QUrl("https://github.com/skvoch/setup-switcher")
+            )
         )
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        root.addWidget(buttons)
+        footer.addWidget(github)
+        footer.addStretch(1)
+        footer.addWidget(buttons)
+        root.addLayout(footer)
+
+    def _set_update_banner(self, enabled: bool, latest_version: str = "") -> None:
+        if enabled:
+            self.release_banner.setObjectName("updateBanner")
+            self.release_banner.setText(
+                self._release_banner_text(
+                    update_available=True, latest_version=latest_version
+                )
+            )
+            self.release_banner.show()
+        else:
+            self.release_banner.hide()
+        self.release_banner.style().unpolish(self.release_banner)
+        self.release_banner.style().polish(self.release_banner)
+
+    def _simulate_update(self, enabled: bool) -> None:
+        if enabled:
+            self._set_update_banner(True, "99.0.0-debug")
+        else:
+            self._set_update_banner(self._update_available, self._latest_version)
+
+    def _update_check_finished(self, reply: QNetworkReply) -> None:
+        try:
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                self.release_banner.hide()
+                return
+            releases = json.loads(bytes(reply.readAll()).decode("utf-8"))
+            latest = releases[0] if releases else {}
+            self._latest_version = str(latest.get("tag_name", "")).removeprefix("v")
+            self._update_available = bool(self._latest_version) and is_newer_version(
+                self._latest_version, current_version()
+            )
+            if not getattr(self, "debug_update_available", None) or not self.debug_update_available.isChecked():
+                self._set_update_banner(
+                    self._update_available, self._latest_version
+                )
+        except (ValueError, TypeError, KeyError):
+            self.release_banner.hide()
+        finally:
+            reply.deleteLater()
 
 
 class SwitcherApp:
@@ -517,8 +600,8 @@ class SwitcherApp:
         self.flyout.switcher.set_colors(self.config.colors.game, self.config.colors.racing)
         self.flyout.choose.connect(self.apply_profile)
         self.flyout.settings_requested.connect(self.show_settings)
-        self.tray = QSystemTrayIcon(make_icon(), app)
-        self.tray.setToolTip("Setup Switcher")
+        self.tray = QSystemTrayIcon(app_icon(), app)
+        self.tray.setToolTip(f"Switcher {current_version()}")
         menu = QMenu()
         settings_action = QAction("Settings", menu)
         settings_action.triggered.connect(self.show_settings)
@@ -647,6 +730,21 @@ QPushButton#settingsButton { color: white; background: transparent; border: none
 QPushButton#settingsButton:hover { background: #494949; }
 QDialog { background: #202124; color: #f2f2f2; }
 QDialog QLabel, QCheckBox { color: #e8e8e8; }
+QLabel#releaseBanner {
+    color: #d9d9db;
+    background: #2d2e32;
+    border: 1px solid #45464b;
+    border-radius: 7px;
+    padding: 9px 11px;
+}
+QLabel#updateBanner {
+    color: #ffe1bf;
+    background: #593715;
+    border: 1px solid #d9822b;
+    border-radius: 7px;
+    padding: 9px 11px;
+}
+QLabel#releaseBanner a { color: #ffb45f; }
 QTabWidget::pane {
     background: #292a2d;
     border: 1px solid #414246;
@@ -695,6 +793,14 @@ QDialogButtonBox QPushButton {
 }
 QDialogButtonBox QPushButton:hover { background: #404146; border-color: #62646a; }
 QDialogButtonBox QPushButton:pressed { background: #2b2c30; }
+QPushButton#githubButton {
+    color: #ededed;
+    background: #343539;
+    border: 1px solid #4b4c51;
+    border-radius: 6px;
+}
+QPushButton#githubButton:hover { background: #404146; border-color: #62646a; }
+QPushButton#githubButton:pressed { background: #2b2c30; }
 """
 
 
@@ -709,7 +815,7 @@ def capture_ui_screenshots(app: QApplication) -> None:
     flyout.adjustSize()
     flyout.move(80, 80)
 
-    settings = SettingsDialog(config)
+    settings = SettingsDialog(config, check_updates=False)
     settings.adjustSize()
     settings.move(80, 80)
 
@@ -720,6 +826,17 @@ def capture_ui_screenshots(app: QApplication) -> None:
         (settings, "settings-driving.png", lambda: settings.tabs.setCurrentIndex(1)),
         (settings, "settings-hotkeys.png", lambda: settings.tabs.setCurrentIndex(2)),
     ]
+    if hasattr(settings, "debug_update_available"):
+        captures.append(
+            (
+                settings,
+                "settings-debug.png",
+                lambda: (
+                    settings.tabs.setCurrentIndex(3),
+                    settings.debug_update_available.setChecked(True),
+                ),
+            )
+        )
     state = {"index": 0}
 
     def next_capture() -> None:
@@ -780,6 +897,8 @@ def main() -> int:
     if sys.platform == "win32" and not screenshot_mode:
         app.instance_mutex = instance_mutex
     app.setApplicationName("Switcher")
+    app.setApplicationVersion(current_version())
+    app.setWindowIcon(app_icon())
     app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(STYLE)
     signal.signal(signal.SIGINT, lambda *_: app.quit())

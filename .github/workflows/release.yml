@@ -47,6 +47,12 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install -r requirements-build.txt
 
+      - name: Embed tag version
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          Set-Content -Path switcher/VERSION -Value $version -NoNewline
+
       - name: Build portable application
         shell: pwsh
         run: >-
@@ -55,8 +61,10 @@ jobs:
           --clean
           --onedir
           --windowed
-          --name SetupSwitcher
+          --name switcher
+          --icon switcher/assets/switcher.ico
           --add-data "switcher/assets;switcher/assets"
+          --add-data "switcher/VERSION;switcher"
           --collect-all pycaw
           --hidden-import win32timezone
           run_switcher.py
@@ -64,10 +72,10 @@ jobs:
       - name: Create release archive
         shell: pwsh
         run: |
-          $package = "SetupSwitcher-$env:GITHUB_REF_NAME-windows-x64"
+          $package = "switcher-$env:GITHUB_REF_NAME-windows-x64"
           New-Item -ItemType Directory -Path $package | Out-Null
-          Copy-Item dist/SetupSwitcher/* -Destination $package -Recurse
-          Copy-Item README.md, THIRD_PARTY_NOTICES.md -Destination $package
+          Copy-Item dist/switcher/* -Destination $package -Recurse
+          Copy-Item README.md -Destination $package
           Compress-Archive -Path "$package/*" -DestinationPath "$package.zip"
           "PACKAGE_NAME=$package" | Out-File -FilePath $env:GITHUB_ENV -Append
 

@@ -1,3 +1,6 @@
-"""Windows gaming setup switcher."""
+"""Windows desktop setup switcher."""
 
-__version__ = "0.1.0"
+from .version import current_version
+
+
+__version__ = current_version()
