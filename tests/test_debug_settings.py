@@ -25,6 +25,15 @@ class DebugSettingsTests(unittest.TestCase):
         ):
             return app_module.SettingsDialog(Config(), check_updates=False)
 
+    def test_screenshot_mode_can_explicitly_hide_debug_tab(self) -> None:
+        dialog = app_module.SettingsDialog(
+            Config(), check_updates=False, show_debug=False
+        )
+
+        tabs = [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())]
+        self.assertNotIn("Debug", tabs)
+        dialog.close()
+
     def test_source_run_has_debug_tab_and_can_simulate_update(self) -> None:
         dialog = self.create_dialog(frozen=False)
 

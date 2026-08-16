@@ -441,7 +441,14 @@ class SettingsDialog(QDialog):
             )
         return f"<b>Switcher {current_version()}</b> · Checking for updates…"
 
-    def __init__(self, config: Config, parent=None, *, check_updates: bool = True) -> None:
+    def __init__(
+        self,
+        config: Config,
+        parent=None,
+        *,
+        check_updates: bool = True,
+        show_debug: bool | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Switcher settings")
         self.setMinimumWidth(520)
@@ -501,7 +508,9 @@ class SettingsDialog(QDialog):
         hint.setWordWrap(True)
         hotkeys_form.addRow(hint)
         tabs.addTab(hotkeys_page, "Hotkeys")
-        if not getattr(sys, "frozen", False):
+        if show_debug is None:
+            show_debug = not getattr(sys, "frozen", False)
+        if show_debug:
             debug_page = QWidget()
             debug_layout = QVBoxLayout(debug_page)
             debug_hint = QLabel(
@@ -815,7 +824,7 @@ def capture_ui_screenshots(app: QApplication) -> None:
     flyout.adjustSize()
     flyout.move(80, 80)
 
-    settings = SettingsDialog(config, check_updates=False)
+    settings = SettingsDialog(config, check_updates=False, show_debug=False)
     settings.adjustSize()
     settings.move(80, 80)
 
